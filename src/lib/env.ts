@@ -125,6 +125,24 @@ export type Env = z.infer<typeof EnvSchema>;
 function loadEnv(): Env {
   const source: NodeJS.ProcessEnv = { ...process.env };
 
+  /*
+   * Treat a blank variable exactly like an absent one.
+   *
+   * Every hosting platform lets a variable be declared without a value, and
+   * surfaces it as an empty string rather than leaving it undefined - Vercel,
+   * Docker `ENV FOO=`, GitHub Actions and docker-compose all do this. Without
+   * this pass, `CAPTCHA_PROVIDER=""` fails as "expected 'none' | 'turnstile',
+   * received ''" instead of falling back to its default, and `??=` fallbacks
+   * below never fire because the key technically exists.
+   *
+   * Blank means "I did not set this", so the schema's defaults should apply.
+   */
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === 'string' && value.trim() === '') {
+      delete source[key];
+    }
+  }
+
   // Compilation touches no database, so a build in CI does not need a real one.
   if (isBuildPhase && !source['DATABASE_URL']) {
     source['DATABASE_URL'] = BUILD_PLACEHOLDER_DATABASE_URL;
@@ -137,8 +155,24 @@ function loadEnv(): Env {
 
   // Peppers are only used to hash values at request time.
   if (isBuildPhase) {
+    const missing: string[] = [];
+
     for (const key of ['IGN_HASH_PEPPER', 'IP_HASH_PEPPER', 'SESSION_TOKEN_PEPPER'] as const) {
-      source[key] ??= `${PLACEHOLDER_PREFIX}_build_time_placeholder_value_only`;
+      if (source[key]) continue;
+
+      source[key] = `${PLACEHOLDER_PREFIX}_build_time_placeholder_value_only`;
+      missing.push(key);
+    }
+
+    if (missing.length > 0) {
+      // Loud, but not fatal. The build genuinely does not need these; the
+      // running server absolutely does, and this is the last chance to say so
+      // somewhere the operator is actually looking (the deploy log).
+      console.warn(
+        `\n[env] WARNING: building without ${missing.join(', ')}.\n` +
+          '[env] The build will succeed, but the server will refuse to start until\n' +
+          '[env] these are set. Generate them with: npm run secrets:generate\n',
+      );
     }
   }
 
