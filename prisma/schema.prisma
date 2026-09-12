@@ -1,0 +1,511 @@
+// ---------------------------------------------------------------------------
+// Game Event Voting System - MySQL schema
+//
+// DESIGN NOTES
+//
+// 1. Identity is modelled as a *claim*, never as an authentication.
+//    Three separate concepts are kept apart on purpose:
+//
+//      Voter               - a normalised in-game identity (global, cross-event)
+//      VoterSession        - an opaque browser credential (HTTP-only cookie)
+//      EventIdentityClaim  - "this browser claims to be this Voter, for this event"
+//
+//    Because the claim carries an `identityMethod`, a stronger verification
+//    scheme (Discord OAuth, game API, admin-issued token) can be introduced
+//    later as a new enum member plus a new claim-issuing route. Votes, tallies,
+//    audit and results code do not change.
+//
+// 2. `Vote.@@unique([eventId, voterId])` is the authoritative duplicate-vote
+//    guarantee. Application checks are a fast path for a friendly error message;
+//    this constraint is what actually wins a concurrent double-submit race.
+//
+// 3. No raw PII is stored. IP addresses and user agents are persisted only as
+//    keyed HMAC digests, and the IGN is stored as display/normalised/hash.
+//
+// MYSQL-SPECIFIC NOTES
+//
+// A. COLLATION AND IDENTITY. MySQL's default collations are
+//    both case-insensitive and ACCENT-insensitive (Prisma creates the tables
+//    as utf8mb4_unicode_ci, which behaves the same way). A unique index on
+//    `normalizedName` would therefore treat "jose" and "josé" as the same row
+//    and refuse the second voter, which is wrong - they are different players.
+//    So `nameHash` carries the uniqueness instead: it is a hex HMAC of the exact
+//    normalised bytes, so it is pure ASCII and immune to collation entirely.
+//    `normalizedName` keeps a plain index for admin search.
+//
+// B. NO SCALAR LISTS. MySQL has no array type, so `Vote.suspicionReasons` is a
+//    JSON column. The repository layer is the only place that decodes it.
+//
+// C. TEXT COLUMNS. MySQL defaults `String` to VARCHAR(191). Every field that can
+//    legitimately exceed that is given an explicit `@db.Text` or a wider
+//    VarChar, or it would be silently truncated at write time.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// Enums
+// ===========================================================================
+
+enum AdminRole {
+  /// Everything, including managing other administrators.
+  SUPER_ADMIN
+  /// Manage events, options, results and vote moderation.
+  ADMIN
+  /// Read-only access to results and audit information.
+  AUDITOR
+}
+
+enum EventStatus {
+  DRAFT
+  SCHEDULED
+  ACTIVE
+  CLOSED
+  ARCHIVED
+}
+
+enum VotingType {
+  SINGLE_CHOICE
+  MULTIPLE_CHOICE
+  YES_NO
+}
+
+enum ResultsVisibility {
+  /// Never shown publicly; administrators only.
+  HIDDEN
+  /// Shown to a voter immediately after that voter has voted.
+  AFTER_VOTING
+  /// Shown publicly for the whole voting period (live tally).
+  WHILE_VOTING
+  /// Shown publicly once the event reaches CLOSED/ARCHIVED.
+  AFTER_CLOSE
+}
+
+enum VoteStatus {
+  VALID
+  INVALIDATED
+}
+
+/// How the voter identity was established for a given claim/vote.
+/// Extension point: adding a member here is how stronger verification lands.
+enum IdentityMethod {
+  IGN_SELF_DECLARED
+  DISCORD_OAUTH
+  GAME_ACCOUNT
+  VOTER_TOKEN
+  ADMIN_VERIFIED
+}
+
+enum AuditActorType {
+  ADMIN
+  VOTER
+  SYSTEM
+}
+
+enum AuditSeverity {
+  INFO
+  NOTICE
+  WARNING
+  CRITICAL
+}
+
+enum AuditAction {
+  EVENT_CREATED
+  EVENT_UPDATED
+  EVENT_PUBLISHED
+  EVENT_UNPUBLISHED
+  EVENT_OPENED
+  EVENT_CLOSED
+  EVENT_ARCHIVED
+  EVENT_DUPLICATED
+  OPTION_CREATED
+  OPTION_UPDATED
+  OPTION_DEACTIVATED
+  OPTION_DELETED
+  VOTE_SUBMITTED
+  VOTE_DUPLICATE_BLOCKED
+  VOTE_SESSION_LIMIT_BLOCKED
+  VOTE_REJECTED
+  VOTE_FLAGGED_SUSPICIOUS
+  VOTE_INVALIDATED
+  VOTE_RESTORED
+  VOTE_VOIDED_FOR_REVOTE
+  VOTER_SESSION_CREATED
+  VOTER_IDENTITY_CLAIMED
+  VOTER_BLOCKED
+  VOTER_UNBLOCKED
+  VOTER_SESSION_BLOCKED
+  RATE_LIMIT_TRIGGERED
+  SUSPICIOUS_ACTIVITY_DETECTED
+  CAPTCHA_FAILED
+  ADMIN_LOGIN_SUCCEEDED
+  ADMIN_LOGIN_FAILED
+  ADMIN_LOGGED_OUT
+  ADMIN_LOCKED_OUT
+  ADMIN_CREATED
+  ADMIN_UPDATED
+  ADMIN_DEACTIVATED
+  ADMIN_PASSWORD_CHANGED
+  RESULTS_EXPORTED
+}
+
+enum RateLimitScope {
+  VOTE_SESSION
+  VOTE_IP
+  CLAIM_IP
+  ADMIN_LOGIN_IP
+  ADMIN_LOGIN_ACCOUNT
+}
+
+// ===========================================================================
+// Administration
+// ===========================================================================
+
+model Admin {
+  id                 String    @id @default(cuid())
+  email              String    @unique @db.VarChar(254)
+  displayName        String    @db.VarChar(120)
+  /// scrypt digest encoded as `scrypt$N$r$p$salt$hash`. Never a raw password.
+  passwordHash       String    @db.VarChar(255)
+  role               AdminRole @default(ADMIN)
+  isActive           Boolean   @default(true)
+  mustChangePassword Boolean   @default(false)
+  failedLoginCount   Int       @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  passwordChangedAt  DateTime  @default(now())
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  sessions         AdminSession[]
+  createdEvents    VotingEvent[]  @relation("EventCreatedBy")
+  auditLogs        AuditLog[]     @relation("AuditActorAdmin")
+  invalidatedVotes Vote[]         @relation("VoteInvalidatedBy")
+
+  @@index([isActive])
+  @@map("admins")
+}
+
+model AdminSession {
+  id String @id @default(cuid())
+
+  adminId String
+  /// HMAC of the opaque token held in the HTTP-only cookie. The raw token is
+  /// never stored, so a database leak does not yield usable sessions.
+  tokenHash String @unique @db.VarChar(64)
+
+  ipHash        String? @db.VarChar(64)
+  userAgentHash String? @db.VarChar(64)
+
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+
+  admin Admin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([expiresAt])
+  @@map("admin_sessions")
+}
+
+// ===========================================================================
+// Voting events and options
+// ===========================================================================
+
+model VotingEvent {
+  id           String      @id @default(cuid())
+  slug         String      @unique @db.VarChar(80)
+  title        String      @db.VarChar(160)
+  description  String      @db.Text
+  instructions String?     @db.Text
+  votingType   VotingType
+  status       EventStatus @default(DRAFT)
+
+  /// Selection bounds. For SINGLE_CHOICE and YES_NO both are forced to 1.
+  minSelections Int @default(1)
+  maxSelections Int @default(1)
+
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  resultsVisibility ResultsVisibility @default(AFTER_CLOSE)
+
+  // --- Server-enforced anti-abuse policy (per event) ---
+
+  /// Votes accepted from a single browser session. Default 1. Raise it for
+  /// communities that legitimately share a device (LAN parties, net cafes).
+  maxVotesPerSession Int @default(1)
+
+  /// Votes from one IP beyond which further votes are FLAGGED, never blocked,
+  /// because guild-mates routinely share a network. 0 disables IP flagging.
+  ipSoftLimit Int @default(8)
+
+  requireCaptcha Boolean @default(false)
+
+  createdById String
+  publishedAt DateTime?
+  openedAt    DateTime?
+  closedAt    DateTime?
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  createdBy Admin                @relation("EventCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  options   VotingOption[]
+  votes     Vote[]
+  claims    EventIdentityClaim[]
+  auditLogs AuditLog[]
+
+  @@index([status, startsAt])
+  @@index([status, endsAt])
+  @@index([createdById])
+  @@map("voting_events")
+}
+
+model VotingOption {
+  id           String   @id @default(cuid())
+  eventId      String
+  name         String   @db.VarChar(120)
+  description  String?  @db.Text
+  imageUrl     String?  @db.VarChar(1000)
+  displayOrder Int      @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  event      VotingEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  selections VoteSelection[]
+
+  @@unique([eventId, name])
+  @@index([eventId, displayOrder])
+  @@map("voting_options")
+}
+
+// ===========================================================================
+// Voters, sessions and identity claims
+// ===========================================================================
+
+model Voter {
+  id String @id @default(cuid())
+
+  /// Exactly as typed, preserved for display in admin views and receipts.
+  displayName String @db.VarChar(64)
+
+  /// Case-folded, whitespace-collapsed, Unicode-normalised form. The value all
+  /// duplicate detection compares against.
+  ///
+  /// NOT unique here - see note (A) at the top of this file. MySQL's default
+  /// collation is accent-insensitive, so a unique index would wrongly merge
+  /// "jose" and "josé". `nameHash` carries the constraint instead.
+  normalizedName String @db.VarChar(64)
+
+  /// Keyed HMAC of `normalizedName`, in hex. THE identity key: pure ASCII, so
+  /// it is immune to collation, and stable if the plaintext columns are ever
+  /// purged for data-retention reasons.
+  nameHash String @unique @db.VarChar(64)
+
+  /// Deliberately lossy key (homoglyphs folded, separators dropped) used ONLY
+  /// to flag near-duplicate names to a human moderator. Never an identity:
+  /// `Shadow` and `5hadow` share this key and may well be different players.
+  confusableKey String @db.VarChar(64)
+
+  firstSeenAt   DateTime @default(now())
+  lastSeenAt    DateTime @default(now())
+  isBlocked     Boolean  @default(false)
+  blockedReason String?  @db.VarChar(500)
+
+  votes  Vote[]
+  claims EventIdentityClaim[]
+
+  @@index([isBlocked])
+  @@index([confusableKey])
+  @@index([normalizedName])
+  @@map("voters")
+}
+
+model VoterSession {
+  id String @id @default(cuid())
+
+  /// HMAC of the opaque token in the HTTP-only cookie.
+  tokenHash String @unique @db.VarChar(64)
+
+  ipHash        String? @db.VarChar(64)
+  userAgentHash String? @db.VarChar(64)
+
+  createdAt     DateTime  @default(now())
+  lastSeenAt    DateTime  @default(now())
+  expiresAt     DateTime
+  isBlocked     Boolean   @default(false)
+  blockedReason String?   @db.VarChar(500)
+  blockedAt     DateTime?
+
+  /// Denormalised counters used for cheap abuse heuristics.
+  voteCount  Int @default(0)
+  claimCount Int @default(0)
+
+  claims EventIdentityClaim[]
+  votes  Vote[]
+
+  @@index([expiresAt])
+  @@index([ipHash])
+  @@map("voter_sessions")
+}
+
+/// Binds a browser session to a claimed identity for one specific event.
+/// One claim per (event, session): a browser cannot hold two identities in the
+/// same election at the same time.
+model EventIdentityClaim {
+  id             String         @id @default(cuid())
+  eventId        String
+  sessionId      String
+  voterId        String
+  identityMethod IdentityMethod @default(IGN_SELF_DECLARED)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  event   VotingEvent  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  session VoterSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  voter   Voter        @relation(fields: [voterId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, sessionId])
+  @@index([eventId, voterId])
+  @@index([voterId])
+  @@index([sessionId])
+  @@map("event_identity_claims")
+}
+
+// ===========================================================================
+// Votes
+// ===========================================================================
+
+model Vote {
+  id String @id @default(cuid())
+
+  /// Short, non-sequential, non-guessable code shown on the confirmation page.
+  /// Exists so a voter has something to reference without `id` ever leaving
+  /// the server.
+  receiptCode String @unique @db.VarChar(32)
+
+  eventId        String
+  voterId        String
+  sessionId      String?
+  identityMethod IdentityMethod @default(IGN_SELF_DECLARED)
+
+  status       VoteStatus @default(VALID)
+  isSuspicious Boolean    @default(false)
+
+  /// JSON array of SuspicionReason strings. MySQL has no array type; the vote
+  /// repository is the only place that encodes or decodes this.
+  suspicionReasons Json?
+
+  ipHash        String?  @db.VarChar(64)
+  userAgentHash String?  @db.VarChar(64)
+  castAt        DateTime @default(now())
+
+  invalidatedAt      DateTime?
+  invalidatedById    String?
+  invalidationReason String?   @db.VarChar(500)
+
+  event         VotingEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  voter         Voter           @relation(fields: [voterId], references: [id], onDelete: Restrict)
+  session       VoterSession?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  invalidatedBy Admin?          @relation("VoteInvalidatedBy", fields: [invalidatedById], references: [id], onDelete: SetNull)
+  selections    VoteSelection[]
+
+  /// THE duplicate-vote guarantee. Enforced by MySQL, so two concurrent
+  /// submissions from the same identity cannot both succeed.
+  @@unique([eventId, voterId])
+  @@index([eventId, castAt])
+  @@index([eventId, status])
+  @@index([eventId, ipHash])
+  @@index([sessionId])
+  @@index([voterId])
+  @@index([invalidatedById])
+  @@map("votes")
+}
+
+model VoteSelection {
+  id        String   @id @default(cuid())
+  voteId    String
+  optionId  String
+  createdAt DateTime @default(now())
+
+  vote Vote @relation(fields: [voteId], references: [id], onDelete: Cascade)
+  /// Restrict: an option that has already received votes can be deactivated,
+  /// never deleted. Tallies must stay reconstructable.
+  option VotingOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
+
+  @@unique([voteId, optionId])
+  @@index([optionId])
+  @@map("vote_selections")
+}
+
+// ===========================================================================
+// Audit and abuse control
+// ===========================================================================
+
+model AuditLog {
+  id        String         @id @default(cuid())
+  action    AuditAction
+  severity  AuditSeverity  @default(INFO)
+  actorType AuditActorType
+
+  /// Human-readable actor for admin display (admin e-mail, voter display name).
+  /// Never contains a token, password or any other secret.
+  actorLabel String? @db.VarChar(254)
+
+  adminId String?
+  eventId String?
+
+  /// Voter and session references are intentionally plain columns rather than
+  /// foreign keys: audit history must survive voter data being purged.
+  voterId        String? @db.VarChar(191)
+  voterSessionId String? @db.VarChar(191)
+
+  ipHash        String?  @db.VarChar(64)
+  userAgentHash String?  @db.VarChar(64)
+  summary       String   @db.Text
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  admin Admin?       @relation("AuditActorAdmin", fields: [adminId], references: [id], onDelete: SetNull)
+  event VotingEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([eventId, createdAt])
+  @@index([action, createdAt])
+  @@index([severity, createdAt])
+  @@index([voterId])
+  @@index([adminId])
+  @@map("audit_logs")
+}
+
+model RateLimitRecord {
+  id    String         @id @default(cuid())
+  scope RateLimitScope
+
+  /// HMAC of `scope|identifier|windowStart` - the atomic upsert target.
+  bucketKey String @unique @db.VarChar(64)
+  /// HMAC of the identifier alone, so an admin can correlate buckets over time
+  /// without the raw IP ever being stored.
+  identifierHash String @db.VarChar(64)
+
+  windowStart  DateTime
+  windowEnd    DateTime
+  count        Int      @default(0)
+  blockedCount Int      @default(0)
+  lastHitAt    DateTime @default(now())
+
+  @@index([scope, windowEnd])
+  @@index([identifierHash, scope])
+  @@index([windowEnd])
+  @@map("rate_limit_records")
+}

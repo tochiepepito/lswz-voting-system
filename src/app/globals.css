@@ -1,0 +1,175 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Colour tokens.
+ *
+ * Declared as raw `R G B` triples so Tailwind's `<alpha-value>` placeholder
+ * works, which is what lets `bg-accent/10` and `text-ink/60` exist at all.
+ *
+ * The light palette is the base; the dark palette overrides only the tokens,
+ * so no component ever needs a `dark:` variant for colour. Both are tuned for
+ * WCAG AA body text against their own surfaces.
+ */
+@layer base {
+  :root {
+    color-scheme: light;
+
+    --c-bg: 247 248 251;
+    --c-surface: 255 255 255;
+    --c-surface-2: 241 243 248;
+    --c-line: 222 226 235;
+
+    --c-ink: 17 22 33;
+    --c-muted: 88 97 116;
+    --c-faint: 134 143 160;
+
+    --c-accent: 79 70 229;
+    --c-accent-ink: 255 255 255;
+    --c-accent-soft: 238 238 255;
+
+    --c-ok: 15 122 86;
+    --c-warn: 169 105 6;
+    --c-danger: 190 42 42;
+    --c-info: 27 105 176;
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+      Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono',
+      monospace;
+  }
+
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+
+    --c-bg: 10 12 18;
+    --c-surface: 19 22 32;
+    --c-surface-2: 27 31 43;
+    --c-line: 44 50 66;
+
+    --c-ink: 236 239 245;
+    --c-muted: 160 169 187;
+    --c-faint: 118 128 148;
+
+    --c-accent: 129 124 255;
+    --c-accent-ink: 12 14 22;
+    --c-accent-soft: 31 32 62;
+
+    --c-ok: 62 194 140;
+    --c-warn: 226 163 56;
+    --c-danger: 245 109 109;
+    --c-info: 96 171 245;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      color-scheme: dark;
+
+      --c-bg: 10 12 18;
+      --c-surface: 19 22 32;
+      --c-surface-2: 27 31 43;
+      --c-line: 44 50 66;
+
+      --c-ink: 236 239 245;
+      --c-muted: 160 169 187;
+      --c-faint: 118 128 148;
+
+      --c-accent: 129 124 255;
+      --c-accent-ink: 12 14 22;
+      --c-accent-soft: 31 32 62;
+
+      --c-ok: 62 194 140;
+      --c-warn: 226 163 56;
+      --c-danger: 245 109 109;
+      --c-info: 96 171 245;
+    }
+  }
+
+  * {
+    @apply border-line;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-bg text-ink antialiased;
+    font-family: var(--font-sans);
+    /* Room for the sticky submit bar on the ballot screen. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /*
+   * A visible, high-contrast focus ring on every interactive element.
+   * Voters on phones and keyboard-only admins both depend on it, and removing
+   * it is the single most common accessibility regression in a design system.
+   */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2;
+    --tw-ring-offset-color: rgb(var(--c-bg));
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Ballot option: the single most important touch target in the app. */
+  .option-card {
+    @apply relative flex w-full cursor-pointer items-start gap-4 rounded-card border-2 border-line
+           bg-surface p-4 text-left transition-colors;
+    /* Comfortably above the 44px minimum touch target on every phone. */
+    min-height: 4.5rem;
+  }
+
+  .option-card:hover {
+    @apply border-accent/50 bg-surface-2;
+  }
+
+  .option-card:has(input:checked) {
+    @apply border-accent bg-accent-soft;
+  }
+
+  .option-card:has(input:focus-visible) {
+    @apply ring-2 ring-accent ring-offset-2;
+  }
+
+  .option-card:has(input:disabled) {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  /* Tally bar used on both the public and admin results screens. */
+  .tally-track {
+    @apply h-2.5 w-full overflow-hidden rounded-full bg-surface-2;
+  }
+
+  .tally-fill {
+    @apply h-full rounded-full transition-[width] duration-500 ease-out;
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden rounded bg-surface-2;
+  }
+
+  .skeleton::after {
+    @apply absolute inset-0 animate-shimmer;
+    content: '';
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--c-line) / 0.6),
+      transparent
+    );
+    transform: translateX(-100%);
+  }
+}
