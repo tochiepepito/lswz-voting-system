@@ -22,6 +22,42 @@ const PLACEHOLDER_PREFIX = 'CHANGE_ME';
  */
 const isBuildPhase = process.env['NEXT_PHASE'] === 'phase-production-build';
 
+/**
+ * The origin Vercel is actually serving this code from.
+ *
+ * Vercel injects the hostname (never a scheme - it serves https only). Which
+ * one is correct depends on the deployment:
+ *
+ *   production  VERCEL_PROJECT_PRODUCTION_URL  the stable alias, identical for
+ *                                              every production deployment
+ *   preview     VERCEL_URL                     this deployment's own hostname,
+ *                                              different on every push
+ *
+ * Using the production alias on a preview would point the same-origin check at
+ * a host the preview is not served from, which rejects every ballot submitted
+ * from it - so the two cases must not be collapsed.
+ */
+function vercelOrigin(): string | undefined {
+  if (!process.env['VERCEL']) return undefined;
+
+  const host =
+    process.env['VERCEL_ENV'] === 'production'
+      ? process.env['VERCEL_PROJECT_PRODUCTION_URL']
+      : process.env['VERCEL_URL'];
+
+  return host ? `https://${host}` : undefined;
+}
+
+/** True for an origin that can only ever mean "a developer's own machine". */
+function isLoopback(value: string): boolean {
+  try {
+    const { hostname } = new URL(value);
+    return ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
 /** Stand-in used only during a build, so compilation never needs a live database. */
 const BUILD_PLACEHOLDER_DATABASE_URL = 'mysql://build:build@localhost:3306/build';
 
@@ -146,6 +182,37 @@ function loadEnv(): Env {
   // Compilation touches no database, so a build in CI does not need a real one.
   if (isBuildPhase && !source['DATABASE_URL']) {
     source['DATABASE_URL'] = BUILD_PLACEHOLDER_DATABASE_URL;
+  }
+
+  /*
+   * APP_URL on Vercel.
+   *
+   * A loopback APP_URL is not a judgement call once the code is running on a
+   * hosting platform - it is always a .env copied from a developer's machine,
+   * and it is fatal twice over: the production guard above refuses to boot, and
+   * even if it did not, the same-origin check backing CSRF would reject every
+   * ballot. Vercel already knows the real origin, so an impossible value is
+   * replaced rather than obeyed - loudly, never silently.
+   *
+   * An APP_URL that is merely *different* - a custom domain - is left exactly
+   * as configured. That is a legitimate deployment choice and overriding it
+   * would be the same silent-misconfiguration failure in the other direction.
+   */
+  const platformOrigin = vercelOrigin();
+  const configuredAppUrl = source['APP_URL'];
+
+  if (platformOrigin && (!configuredAppUrl || isLoopback(configuredAppUrl))) {
+    if (configuredAppUrl) {
+      console.warn(
+        `[env] APP_URL is set to ${configuredAppUrl}, which cannot be correct on Vercel.
+` +
+          `[env] Using ${platformOrigin} instead. Set APP_URL to your real origin
+` +
+          '[env] (or a custom domain) to take control of this explicitly.',
+      );
+    }
+
+    source['APP_URL'] = platformOrigin;
   }
 
   // Likewise, the build issues no cookies, so it does not need the real origin.
