@@ -281,6 +281,23 @@ export const allowedOrigins: readonly string[] = (() => {
   };
 
   add(env.APP_URL);
+
+  /*
+   * The deployment's own hostname.
+   *
+   * Vercel gives every deployment a unique URL alongside the stable alias, and
+   * it is the unique one the dashboard links to after a deploy - so an operator
+   * clicking through lands on an origin that is not APP_URL. Reads render
+   * perfectly there, which makes the app look healthy, and then every sign-in
+   * and every ballot is rejected as cross-site with a message about expired
+   * sessions that points nowhere near the real cause.
+   *
+   * This is the same code running on the same deployment, so trusting its own
+   * hostname widens nothing in practice and removes a genuinely baffling
+   * failure mode.
+   */
+  const deploymentHost = process.env['VERCEL_URL'];
+  if (deploymentHost) add(`https://${deploymentHost}`);
   env.ADDITIONAL_ALLOWED_ORIGINS.split(',').forEach(add);
 
   return Array.from(origins);
