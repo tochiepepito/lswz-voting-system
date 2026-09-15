@@ -129,6 +129,7 @@ enum AuditAction {
   OPTION_UPDATED
   OPTION_DEACTIVATED
   OPTION_DELETED
+  OPTIONS_REORDERED
   VOTE_SUBMITTED
   VOTE_DUPLICATE_BLOCKED
   VOTE_SESSION_LIMIT_BLOCKED
@@ -249,6 +250,15 @@ model VotingEvent {
   ipSoftLimit Int @default(8)
 
   requireCaptcha Boolean @default(false)
+
+  /// When true, each voter sees the options in an order randomised just for
+  /// them, deterministically re-derived from their voter identity rather than
+  /// stored - so their own ballot never reorders itself between page loads,
+  /// but no two voters need see the same arrangement. Counters ballot-position
+  /// bias (the option listed first collects a disproportionate share of
+  /// undecided votes) without touching `VotingOption.displayOrder`, which
+  /// stays the order shown to admins and used when this is off.
+  randomizeOptionOrder Boolean @default(false)
 
   createdById String
   publishedAt DateTime?

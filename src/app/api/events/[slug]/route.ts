@@ -31,11 +31,13 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
       receipt: null,
       canSeeResults: ResultsService.isPublicResultsVisible(event, false),
     };
+    let voterId: string | null = null;
 
     if (resolved && !resolved.session.isBlocked) {
       const voter = await VoterService.getClaimedVoter(event.id, resolved.session.id);
 
       if (voter) {
+        voterId = voter.id;
         const receipt = await VotingService.getReceiptForSession(event.id, resolved.session.id);
         const hasVoted = receipt !== null;
 
@@ -55,7 +57,7 @@ export async function GET(_request: Request, context: { params: Promise<{ slug: 
     }
 
     return jsonOk({
-      event: toPublicEvent(event),
+      event: toPublicEvent(event, new Date(), voterId),
       ballot,
       csrfToken: resolved?.csrfToken ?? null,
     });

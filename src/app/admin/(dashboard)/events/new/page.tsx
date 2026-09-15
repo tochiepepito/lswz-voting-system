@@ -42,6 +42,7 @@ export default async function NewEventPage() {
           maxVotesPerSession: 1,
           ipSoftLimit: 8,
           requireCaptcha: false,
+          randomizeOptionOrder: false,
         }}
       />
     </div>

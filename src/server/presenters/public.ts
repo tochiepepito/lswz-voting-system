@@ -1,3 +1,4 @@
+import { hashBallotOrderSeed, seededShuffle } from '@/lib/crypto';
 import { describeBallotRule, selectionBounds, votingPhase, type VotingPhase } from '@/lib/voting-rules';
 import type { EventStatus, ResultsVisibility, VotingType } from '@/types/domain';
 import type { EventWithOptions, OptionRow } from '../repositories/event.repository';
@@ -58,9 +59,24 @@ export function toPublicOption(option: OptionRow): PublicOption {
   };
 }
 
-export function toPublicEvent(event: EventWithOptions, now = new Date()): PublicEvent {
+/**
+ * @param voterId The identity voting in *this* event, when known. Pass it
+ *   whenever one is available (the ballot page, the status API once an IGN is
+ *   claimed) so `randomizeOptionOrder` can take effect. Omit it only where no
+ *   voter is resolved yet - the event details page before any IGN is entered,
+ *   for instance - where there is nothing to seed a stable order from anyway.
+ */
+export function toPublicEvent(
+  event: EventWithOptions,
+  now = new Date(),
+  voterId: string | null = null,
+): PublicEvent {
   const bounds = selectionBounds(event);
   const activeOptions = event.options.filter((option) => option.isActive);
+  const orderedOptions =
+    event.randomizeOptionOrder && voterId
+      ? seededShuffle(activeOptions, hashBallotOrderSeed(event.id, voterId))
+      : activeOptions;
 
   return {
     slug: event.slug,
@@ -79,7 +95,7 @@ export function toPublicEvent(event: EventWithOptions, now = new Date()): Public
     requiresCaptcha: event.requireCaptcha,
     // Deactivated options are dropped entirely rather than sent with a flag:
     // a client cannot render, or submit, what it never received.
-    options: activeOptions.map(toPublicOption),
+    options: orderedOptions.map(toPublicOption),
   };
 }
 

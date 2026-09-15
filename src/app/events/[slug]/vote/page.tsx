@@ -48,7 +48,7 @@ export default async function VotePage({ params }: { params: Promise<{ slug: str
     redirect(`/events/${slug}/confirmation`);
   }
 
-  const publicEvent = toPublicEvent(event);
+  const publicEvent = toPublicEvent(event, new Date(), voter.id);
 
   if (publicEvent.phase !== 'OPEN') redirect(`/events/${slug}`);
 

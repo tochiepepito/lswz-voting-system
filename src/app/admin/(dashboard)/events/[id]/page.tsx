@@ -189,6 +189,7 @@ export default async function AdminEventPage({
               maxVotesPerSession: event.maxVotesPerSession,
               ipSoftLimit: event.ipSoftLimit,
               requireCaptcha: event.requireCaptcha,
+              randomizeOptionOrder: event.randomizeOptionOrder,
             }}
           />
         ) : (
@@ -241,6 +242,9 @@ async function OverviewTab({
             {event.ipSoftLimit === 0 ? 'Disabled' : `${event.ipSoftLimit} votes`}
           </Row>
           <Row label="CAPTCHA">{event.requireCaptcha ? 'Required' : 'Off'}</Row>
+          <Row label="Option order">
+            {event.randomizeOptionOrder ? 'Randomized per voter' : 'Fixed (as arranged below)'}
+          </Row>
           <Row label="Created">
             <LocalTime value={event.createdAt.toISOString()} />
           </Row>

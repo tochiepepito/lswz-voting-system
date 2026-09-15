@@ -46,6 +46,7 @@ export type EventFormDefaults = {
   maxVotesPerSession: number;
   ipSoftLimit: number;
   requireCaptcha: boolean;
+  randomizeOptionOrder: boolean;
 };
 
 const EMPTY_OPTION: OptionDraft = { name: '', description: '', imageUrl: '' };
@@ -467,6 +468,24 @@ export function EventForm({
             <span className="font-medium">Require a CAPTCHA to vote</span>
             <span className="block text-xs text-muted">
               Only takes effect when a CAPTCHA provider is configured for this deployment.
+            </span>
+          </span>
+        </label>
+
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            name="randomizeOptionOrder"
+            defaultChecked={defaults.randomizeOptionOrder}
+            className="mt-0.5 h-5 w-5 rounded accent-[rgb(var(--c-accent))]"
+          />
+          <span className="text-sm">
+            <span className="font-medium">Show each voter the options in a random order</span>
+            <span className="block text-xs text-muted">
+              Counters the advantage of being listed first. Order stays fixed for a given
+              voter across reloads - only different voters see it differently. Turn this off
+              when the order itself is meaningful, e.g. a chronological or ranked list. The
+              order set on the Options tab is unaffected and is what admins always see.
             </span>
           </span>
         </label>

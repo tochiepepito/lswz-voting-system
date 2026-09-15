@@ -12,6 +12,7 @@ import {
   optionIdSchema,
   optionInputSchema,
   reorderOptionsSchema,
+  shuffleOptionsSchema,
   updateEventSchema,
   updateOptionSchema,
 } from '@/schemas/event';
@@ -289,7 +290,7 @@ export async function reorderOptionsAction(
   const raw = formDataToObject(formData);
 
   return withResult('reorderOptionsAction', async () => {
-    await requireAdmin('option:write');
+    const current = await requireAdmin('option:write');
     await assertAdminCsrf(raw['csrfToken']);
 
     const parsed = reorderOptionsSchema.safeParse({
@@ -299,9 +300,35 @@ export async function reorderOptionsAction(
 
     if (!parsed.success) return fail('VALIDATION_FAILED', 'That ordering is not valid.');
 
-    await EventService.reorderOptions(parsed.data.eventId, parsed.data.orderedOptionIds);
+    await EventService.reorderOptions(parsed.data.eventId, parsed.data.orderedOptionIds, {
+      ...actorFrom(current),
+      context: await getRequestContext(),
+    });
     revalidateEvent(parsed.data.eventId);
 
     return ok({ message: 'Order saved.' });
+  });
+}
+
+export async function shuffleOptionsAction(
+  _previous: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const raw = formDataToObject(formData);
+
+  return withResult('shuffleOptionsAction', async () => {
+    const current = await requireAdmin('option:write');
+    await assertAdminCsrf(raw['csrfToken']);
+
+    const parsed = shuffleOptionsSchema.safeParse({ eventId: raw['eventId'] });
+    if (!parsed.success) return fail('VALIDATION_FAILED', 'That event could not be found.');
+
+    await EventService.shuffleOptionOrder(parsed.data.eventId, {
+      ...actorFrom(current),
+      context: await getRequestContext(),
+    });
+    revalidateEvent(parsed.data.eventId);
+
+    return ok({ message: 'Options shuffled.' });
   });
 }

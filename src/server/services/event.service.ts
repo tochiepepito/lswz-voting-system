@@ -1,3 +1,4 @@
+import { shuffle } from '@/lib/crypto';
 import { appError } from '@/lib/errors';
 import type { RequestContext } from '@/lib/http';
 import { isUniqueViolationOn, prisma } from '@/lib/prisma';
@@ -196,6 +197,7 @@ export async function createEvent(
       maxVotesPerSession: input.maxVotesPerSession,
       ipSoftLimit: input.ipSoftLimit,
       requireCaptcha: input.requireCaptcha,
+      randomizeOptionOrder: input.randomizeOptionOrder,
       createdById: actor.adminId,
       options: options.map((option, index) => ({
         name: option.name,
@@ -251,6 +253,7 @@ export async function duplicateEvent(
     maxVotesPerSession: source.maxVotesPerSession,
     ipSoftLimit: source.ipSoftLimit,
     requireCaptcha: source.requireCaptcha,
+    randomizeOptionOrder: source.randomizeOptionOrder,
     createdById: actor.adminId,
     options: source.options.map((option) => ({
       name: option.name,
@@ -346,6 +349,7 @@ export async function updateEvent(
       maxVotesPerSession: input.maxVotesPerSession,
       ipSoftLimit: input.ipSoftLimit,
       requireCaptcha: input.requireCaptcha,
+      randomizeOptionOrder: input.randomizeOptionOrder,
     });
 
     await AuditService.recordAdminAction({
@@ -610,11 +614,49 @@ export async function removeOption(
   });
 }
 
+/**
+ * Set the exact order an admin dragged/arranged the options into.
+ *
+ * This is the order shown to admins everywhere, and the order voters see
+ * unless `randomizeOptionOrder` overrides it per voter on the ballot itself.
+ */
 export async function reorderOptions(
   eventId: string,
   orderedOptionIds: readonly string[],
+  actor: ActorContext,
 ): Promise<void> {
   await setOptionOrder(eventId, orderedOptionIds);
+
+  await AuditService.recordAdminAction({
+    action: 'OPTIONS_REORDERED',
+    summary: 'The option order was rearranged.',
+    adminId: actor.adminId,
+    adminLabel: actor.adminLabel,
+    eventId,
+    context: actor.context,
+  });
+}
+
+/**
+ * Randomise the admin-facing option order once, immediately, rather than
+ * dragging each row by hand. A one-off action, not a standing policy - for
+ * "every voter gets their own random order," see `randomizeOptionOrder` on
+ * the event itself, applied at ballot render time.
+ */
+export async function shuffleOptionOrder(eventId: string, actor: ActorContext): Promise<void> {
+  const options = await listOptions(eventId);
+  const shuffled = shuffle(options).map((option) => option.id);
+
+  await setOptionOrder(eventId, shuffled);
+
+  await AuditService.recordAdminAction({
+    action: 'OPTIONS_REORDERED',
+    summary: 'The option order was shuffled.',
+    adminId: actor.adminId,
+    adminLabel: actor.adminLabel,
+    eventId,
+    context: actor.context,
+  });
 }
 
 /** Dashboard tile numbers. */

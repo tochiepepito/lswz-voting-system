@@ -32,6 +32,7 @@ export const eventCoreSelect = {
   maxVotesPerSession: true,
   ipSoftLimit: true,
   requireCaptcha: true,
+  randomizeOptionOrder: true,
   publishedAt: true,
   openedAt: true,
   closedAt: true,
@@ -237,6 +238,7 @@ export type CreateEventData = {
   maxVotesPerSession: number;
   ipSoftLimit: number;
   requireCaptcha: boolean;
+  randomizeOptionOrder: boolean;
   createdById: string;
   options: Array<{
     name: string;

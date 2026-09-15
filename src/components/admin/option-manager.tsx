@@ -4,6 +4,8 @@ import { useActionState, useState } from 'react';
 import {
   addOptionAction,
   deleteOptionAction,
+  reorderOptionsAction,
+  shuffleOptionsAction,
   updateOptionAction,
 } from '@/server/actions/event.actions';
 import { Alert, Badge, Card, CsrfField, Field, cx, inputClass } from '../ui';
@@ -20,6 +22,13 @@ import { SubmitButton } from '../submit-button';
  * deleted - the server refuses, because removing it would rewrite historical
  * tallies and orphan the ballots that chose it. Deactivating hides it from new
  * voters while every past result stays reconstructable.
+ *
+ * ORDER vs RANDOMIZE: the arrows here set `displayOrder`, the one order admins
+ * ever see and the order voters get unless the event's "randomize" setting (on
+ * the event form) overrides it with a per-voter shuffle at ballot time. Moving
+ * a row or shuffling here never touches that per-voter randomization - the two
+ * are independent, and both can be on at once (a fixed admin-facing order, a
+ * scrambled voter-facing one).
  */
 
 export type ManagedOption = {
@@ -43,6 +52,9 @@ export function OptionManager({
   csrfToken: string | null;
   editable: boolean;
 }) {
+  const [reorderState, reorderFormAction] = useActionState(reorderOptionsAction, null);
+  const orderedIds = options.map((option) => option.id);
+
   return (
     <div className="space-y-4">
       {options.length === 0 ? (
@@ -50,20 +62,66 @@ export function OptionManager({
           This event has no options yet. Voting cannot open until at least two exist.
         </Alert>
       ) : (
-        <ul className="space-y-3">
-          {options.map((option) => (
-            <OptionRow
-              key={option.id}
-              eventId={eventId}
-              option={option}
-              csrfToken={csrfToken}
-              editable={editable}
-            />
-          ))}
-        </ul>
+        <>
+          {reorderState && !reorderState.ok ? <Alert tone="danger">{reorderState.message}</Alert> : null}
+
+          {editable && options.length > 1 ? (
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted">
+                Use the arrows to arrange the order shown to admins (and to voters, unless
+                randomised per voter on the event form).
+              </p>
+              <ShuffleButton eventId={eventId} csrfToken={csrfToken} />
+            </div>
+          ) : null}
+
+          <ul className="space-y-3">
+            {options.map((option, index) => (
+              <OptionRow
+                key={option.id}
+                eventId={eventId}
+                option={option}
+                csrfToken={csrfToken}
+                editable={editable}
+                canMoveUp={editable && index > 0}
+                canMoveDown={editable && index < options.length - 1}
+                moveUpOrder={swap(orderedIds, index, index - 1)}
+                moveDownOrder={swap(orderedIds, index, index + 1)}
+                reorderFormAction={reorderFormAction}
+              />
+            ))}
+          </ul>
+        </>
       )}
 
       {editable ? <AddOptionForm eventId={eventId} csrfToken={csrfToken} /> : null}
+    </div>
+  );
+}
+
+/** New array with the elements at `a` and `b` swapped. No-op if either is out of range. */
+function swap<T>(items: readonly T[], a: number, b: number): T[] {
+  const result = [...items];
+  if (a < 0 || b < 0 || a >= result.length || b >= result.length) return result;
+
+  // Both indices were just bounds-checked above.
+  [result[a], result[b]] = [result[b]!, result[a]!];
+  return result;
+}
+
+function ShuffleButton({ eventId, csrfToken }: { eventId: string; csrfToken: string | null }) {
+  const [state, formAction] = useActionState(shuffleOptionsAction, null);
+
+  return (
+    <div className="shrink-0">
+      <form action={formAction} className="flex items-center gap-2">
+        <CsrfField token={csrfToken} />
+        <input type="hidden" name="eventId" value={eventId} />
+        <SubmitButton variant="secondary" pendingLabel="Shuffling...">
+          🔀 Shuffle order
+        </SubmitButton>
+      </form>
+      {state && !state.ok ? <p className="mt-1 text-right text-xs text-danger">{state.message}</p> : null}
     </div>
   );
 }
@@ -73,11 +131,21 @@ function OptionRow({
   option,
   csrfToken,
   editable,
+  canMoveUp,
+  canMoveDown,
+  moveUpOrder,
+  moveDownOrder,
+  reorderFormAction,
 }: {
   eventId: string;
   option: ManagedOption;
   csrfToken: string | null;
   editable: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  moveUpOrder: string[];
+  moveDownOrder: string[];
+  reorderFormAction: (formData: FormData) => void;
 }) {
   const [updateState, updateFormAction] = useActionState(updateOptionAction, null);
   const [deleteState, deleteFormAction] = useActionState(deleteOptionAction, null);
@@ -89,6 +157,37 @@ function OptionRow({
     <Card as="li" className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
+          {editable ? (
+            <div className="flex shrink-0 flex-col gap-1">
+              <form action={reorderFormAction}>
+                <CsrfField token={csrfToken} />
+                <input type="hidden" name="eventId" value={eventId} />
+                <input type="hidden" name="orderedOptionIdsJson" value={JSON.stringify(moveUpOrder)} />
+                <button
+                  type="submit"
+                  disabled={!canMoveUp}
+                  aria-label={`Move "${option.name}" up`}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-line text-sm hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  ▲
+                </button>
+              </form>
+              <form action={reorderFormAction}>
+                <CsrfField token={csrfToken} />
+                <input type="hidden" name="eventId" value={eventId} />
+                <input type="hidden" name="orderedOptionIdsJson" value={JSON.stringify(moveDownOrder)} />
+                <button
+                  type="submit"
+                  disabled={!canMoveDown}
+                  aria-label={`Move "${option.name}" down`}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-line text-sm hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  ▼
+                </button>
+              </form>
+            </div>
+          ) : null}
+
           {option.imageUrl ? (
             /* eslint-disable-next-line @next/next/no-img-element -- arbitrary remote avatar URL */
             <img

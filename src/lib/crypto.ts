@@ -50,6 +50,7 @@ const DOMAIN = {
   csrfToken: 'csrf',
   rateLimitBucket: 'rl-bucket',
   rateLimitIdentifier: 'rl-id',
+  ballotOrder: 'ballot-order',
 } as const;
 
 type Domain = (typeof DOMAIN)[keyof typeof DOMAIN];
@@ -103,6 +104,18 @@ export function hashRateLimitIdentifier(scope: string, identifier: string): stri
   return keyedHash(env.IP_HASH_PEPPER, DOMAIN.rateLimitIdentifier, `${scope}|${identifier}`);
 }
 
+/**
+ * Seed for one voter's randomised ballot order.
+ *
+ * Peppered like every other identifier-derived digest here, so the pairing of
+ * a voter and an event cannot be brute-forced from an observed order into a
+ * guess at `voterId` - not a high-value target, but there is no reason this
+ * one value should be the exception to "identifiers go through a keyed hash".
+ */
+export function hashBallotOrderSeed(eventId: string, voterId: string): string {
+  return keyedHash(env.SESSION_TOKEN_PEPPER, DOMAIN.ballotOrder, `${eventId}|${voterId}`);
+}
+
 // --------------------------------------------------------------------------
 // Token generation
 // --------------------------------------------------------------------------
@@ -140,6 +153,66 @@ export function generateReceiptCode(): string {
   }
 
   return groups.join('-');
+}
+
+// --------------------------------------------------------------------------
+// Shuffling
+// --------------------------------------------------------------------------
+
+/**
+ * Fisher-Yates in place on a copy, drawing each swap index from `nextIndex`.
+ * The two exported shuffles below differ only in where that randomness comes
+ * from - true entropy for one, a reproducible digest for the other - so the
+ * algorithm itself is written once.
+ */
+function fisherYates<T>(items: readonly T[], nextIndex: (bound: number) => number): T[] {
+  const result = items.slice();
+
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    // `j` is always in [0, i] by construction, so both indices are in bounds -
+    // `noUncheckedIndexedAccess` cannot see that from the callback's return type.
+    const j = nextIndex(i + 1);
+    [result[i], result[j]] = [result[j]!, result[i]!];
+  }
+
+  return result;
+}
+
+/**
+ * Genuinely random shuffle, for an admin action that asks to reshuffle an
+ * event's options right now. Never use this for the per-voter ballot order:
+ * two calls give two different answers, and a voter's ballot must look the
+ * same every time they see it.
+ */
+export function shuffle<T>(items: readonly T[]): T[] {
+  return fisherYates(items, (bound) => randomInt(bound));
+}
+
+/**
+ * Deterministic shuffle driven by a hex digest rather than the system RNG.
+ *
+ * The same `seed` always yields the same permutation - callers pass a value
+ * from `hashBallotOrderSeed()`, so one voter's ballot order is stable across
+ * reloads while still being independent of every other voter's. The digest is
+ * consumed 4 bytes at a time per swap and re-hashed once exhausted, so this
+ * works for lists far longer than the 32-byte seed could otherwise cover.
+ */
+export function seededShuffle<T>(items: readonly T[], seed: string): T[] {
+  let material: Buffer = Buffer.from(seed, 'hex');
+  let offset = 0;
+
+  const nextIndex = (bound: number): number => {
+    if (offset + 4 > material.length) {
+      material = createHmac('sha256', 'seeded-shuffle').update(material).digest();
+      offset = 0;
+    }
+
+    const value = material.readUInt32BE(offset);
+    offset += 4;
+    return value % bound;
+  };
+
+  return fisherYates(items, nextIndex);
 }
 
 // --------------------------------------------------------------------------

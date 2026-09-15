@@ -85,6 +85,14 @@ export const reorderOptionsSchema = z.object({
   orderedOptionIds: z.array(idSchema).min(1).max(200),
 });
 
+/**
+ * No client-supplied ordering here on purpose: the new order is randomised
+ * server-side, so nothing about *how* to shuffle is trusted from the request.
+ */
+export const shuffleOptionsSchema = z.object({
+  eventId: idSchema,
+});
+
 // --------------------------------------------------------------------------
 // Events
 // --------------------------------------------------------------------------
@@ -103,6 +111,7 @@ const eventFieldsSchema = z.object({
   maxVotesPerSession: intField({ min: 1, max: 50, label: 'Votes per browser' }).default(1),
   ipSoftLimit: intField({ min: 0, max: 10_000, label: 'IP flagging threshold' }).default(8),
   requireCaptcha: checkboxField.default(false),
+  randomizeOptionOrder: checkboxField.default(false),
 });
 
 /**

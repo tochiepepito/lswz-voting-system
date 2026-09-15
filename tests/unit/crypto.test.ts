@@ -3,12 +3,15 @@ import {
   constantTimeEquals,
   generateReceiptCode,
   generateToken,
+  hashBallotOrderSeed,
   hashIp,
   hashNormalizedIgn,
   hashSessionToken,
   hashUserAgent,
   hashPassword,
   passwordNeedsRehash,
+  seededShuffle,
+  shuffle,
   verifyPassword,
 } from '@/lib/crypto';
 
@@ -95,6 +98,64 @@ describe('constantTimeEquals', () => {
     expect(constantTimeEquals('short', 'much-much-longer')).toBe(false);
     expect(constantTimeEquals('', 'x')).toBe(false);
     expect(constantTimeEquals('', '')).toBe(true);
+  });
+});
+
+describe('seededShuffle', () => {
+  const options = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+
+  it('is deterministic for the same seed', () => {
+    const seed = hashBallotOrderSeed('event-1', 'voter-1');
+    expect(seededShuffle(options, seed)).toEqual(seededShuffle(options, seed));
+  });
+
+  it('gives different voters a different order for the same event', () => {
+    const seedA = hashBallotOrderSeed('event-1', 'voter-1');
+    const seedB = hashBallotOrderSeed('event-1', 'voter-2');
+    expect(seededShuffle(options, seedA)).not.toEqual(seededShuffle(options, seedB));
+  });
+
+  it('gives the same voter a different order in a different event', () => {
+    const seedA = hashBallotOrderSeed('event-1', 'voter-1');
+    const seedB = hashBallotOrderSeed('event-2', 'voter-1');
+    expect(seededShuffle(options, seedA)).not.toEqual(seededShuffle(options, seedB));
+  });
+
+  it('is a permutation: same elements, same length, nothing dropped or duplicated', () => {
+    const seed = hashBallotOrderSeed('event-1', 'voter-1');
+    const result = seededShuffle(options, seed);
+    expect(result).toHaveLength(options.length);
+    expect([...result].sort()).toEqual([...options].sort());
+  });
+
+  it('does not mutate the input array', () => {
+    const copy = [...options];
+    seededShuffle(options, hashBallotOrderSeed('event-1', 'voter-1'));
+    expect(options).toEqual(copy);
+  });
+
+  it('handles lists longer than one digest by re-hashing internally', () => {
+    const long = Array.from({ length: 100 }, (_, index) => `option-${index}`);
+    const seed = hashBallotOrderSeed('event-1', 'voter-1');
+    const result = seededShuffle(long, seed);
+    expect([...result].sort()).toEqual([...long].sort());
+  });
+});
+
+describe('shuffle', () => {
+  it('returns a permutation of the input without mutating it', () => {
+    const items = [1, 2, 3, 4, 5];
+    const copy = [...items];
+    const result = shuffle(items);
+
+    expect(items).toEqual(copy);
+    expect([...result].sort()).toEqual([...items].sort());
+  });
+
+  it('is not deterministic across calls (overwhelmingly likely for 8 items)', () => {
+    const items = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    const results = new Set(Array.from({ length: 20 }, () => shuffle(items).join(',')));
+    expect(results.size).toBeGreaterThan(1);
   });
 });
 

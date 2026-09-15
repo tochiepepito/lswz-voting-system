@@ -49,6 +49,7 @@ export type AuditAction =
   | 'OPTION_UPDATED'
   | 'OPTION_DEACTIVATED'
   | 'OPTION_DELETED'
+  | 'OPTIONS_REORDERED'
   | 'VOTE_SUBMITTED'
   | 'VOTE_DUPLICATE_BLOCKED'
   | 'VOTE_SESSION_LIMIT_BLOCKED'
@@ -127,6 +128,7 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   OPTION_UPDATED: 'Option updated',
   OPTION_DEACTIVATED: 'Option deactivated',
   OPTION_DELETED: 'Option deleted',
+  OPTIONS_REORDERED: 'Option order changed',
   VOTE_SUBMITTED: 'Vote submitted',
   VOTE_DUPLICATE_BLOCKED: 'Duplicate vote blocked',
   VOTE_SESSION_LIMIT_BLOCKED: 'Browser vote limit blocked',
